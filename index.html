@@ -402,7 +402,9 @@
     content: '';
     display: block;
     width: 100%;
+    height: 0;
     padding-top: 100%;
+    box-sizing: border-box;
     border-radius: 50%;
     transition: transform 0.15s ease, opacity 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
   }
@@ -411,7 +413,7 @@
   .cell:hover{ z-index: 3; }
 
   .cell.lived::before{ background: var(--lived-black); }
-  .cell.future::before{ border: 1.5px solid #6E97AD; background: transparent; box-sizing: border-box; }
+  .cell.future::before{ box-shadow: inset 0 0 0 1.5px #6E97AD; background: transparent; }
 
   .cell.void::before{
     background: transparent;
@@ -1342,6 +1344,8 @@
     return `${m}:${String(rem).padStart(2, '0')}`;
   }
 
+  function audioDay(a){ return (typeof a.day === 'number') ? a.day : 0; }
+
   function renderMediaThumbs(){
     const wrap = document.getElementById('mediaThumbs');
     wrap.innerHTML = '';
@@ -1349,7 +1353,7 @@
     const combinedList = [
       ...currentImages.map(img => ({ type: 'image', data: img })),
       ...currentVideos.map(vid => ({ type: 'video', data: vid })),
-      ...currentAudios.map(aud => ({ type: 'audio', data: aud }))
+      ...currentAudios.filter(a => audioDay(a) === activeDayIndex).map(aud => ({ type: 'audio', data: aud }))
     ];
 
     currentImages.forEach((img, idx) => {
@@ -1389,7 +1393,10 @@
       wrap.appendChild(box);
     });
 
+    let audioPos = 0;
     currentAudios.forEach((aud, idx) => {
+      if(audioDay(aud) !== activeDayIndex) return;
+      const myPos = audioPos++;
       const box = document.createElement('div');
       box.className = 'media-thumb audio-thumb';
       const icon = document.createElement('span');
@@ -1400,12 +1407,12 @@
       label.className = 'audio-label';
       label.textContent = formatDuration(aud.duration);
       box.appendChild(label);
-      box.addEventListener('click', () => openLightboxAt(combinedList, currentImages.length + currentVideos.length + idx));
+      box.addEventListener('click', () => openLightboxAt(combinedList, currentImages.length + currentVideos.length + myPos));
       const rm = document.createElement('button');
       rm.type = 'button';
       rm.className = 'media-remove';
       rm.textContent = '×';
-      rm.addEventListener('click', (e) => { e.stopPropagation(); currentAudios.splice(idx, 1); renderMediaThumbs(); });
+      rm.addEventListener('click', (e) => { e.stopPropagation(); currentAudios.splice(idx, 1); renderMediaThumbs(); renderDayTabs(); });
       box.appendChild(rm);
       wrap.appendChild(box);
     });
@@ -1472,8 +1479,9 @@
         const durationSec = (Date.now() - recordStartTime) / 1000;
         if(recordedChunks.length){
           const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-          currentAudios.push({ blob, duration: durationSec });
+          currentAudios.push({ blob, duration: durationSec, day: activeDayIndex });
           renderMediaThumbs();
+          renderDayTabs();
         }
       };
 
@@ -1498,7 +1506,9 @@
       const tab = document.createElement('button');
       tab.type = 'button';
       tab.className = 'day-tab' + (idx === activeDayIndex ? ' active' : '');
-      tab.innerHTML = label + (currentDays[idx] && currentDays[idx].trim() ? '<span class="day-dot"></span>' : '');
+      const hasText = currentDays[idx] && currentDays[idx].trim();
+      const hasVoice = currentAudios.some(a => audioDay(a) === idx);
+      tab.innerHTML = label + (hasText || hasVoice ? '<span class="day-dot"></span>' : '');
       tab.addEventListener('click', () => switchDayTab(idx));
       wrap.appendChild(tab);
     });
@@ -1509,6 +1519,7 @@
     activeDayIndex = idx;
     modalTextarea.value = currentDays[activeDayIndex] || '';
     renderDayTabs();
+    renderMediaThumbs();
     modalTextarea.focus();
   }
 
@@ -1538,6 +1549,7 @@
       currentVideos = media.videos || [];
       currentAudios = media.audios || [];
       renderMediaThumbs();
+      renderDayTabs();
     }
   }
 
@@ -1594,10 +1606,43 @@
     }
   }
 
+
+  // --- Dictation punctuation ---
+  const SPOKEN_PUNCT = [
+    [/\s*\b(?:nowy akapit|new paragraph)\b[,.]?\s*/gi, '\n\n'],
+    [/\s*\b(?:nowa linia|nowa linijka|new line)\b[,.]?\s*/gi, '\n'],
+    [/\s*\b(?:znak zapytania|pytajnik|question mark)\b[,.]?/gi, '?'],
+    [/\s*\b(?:wykrzyknik|znak wykrzyknika|exclamation mark|exclamation point)\b[,.]?/gi, '!'],
+    [/\s*\b(?:wielokropek|trzy kropki|ellipsis)\b[,.]?/gi, '…'],
+    [/\s*\b(?:dwukropek|colon)\b[,.]?/gi, ':'],
+    [/\s*\b(?:średnik|srednik|semicolon)\b[,.]?/gi, ';'],
+    [/\s*\b(?:przecinek|comma)\b[,.]?/gi, ','],
+    [/\s*\b(?:kropka|full stop|period)\b[,.]?/gi, '.'],
+    [/\s*\b(?:myślnik|myslnik|dash)\b[,.]?\s*/gi, ' – ']
+  ];
+
+  function appendDictation(base, chunk, isFinal){
+    let t = chunk.trim();
+    if(!t) return base;
+    if(isFinal){
+      SPOKEN_PUNCT.forEach(([re, r]) => { t = t.replace(re, r); });
+    }
+    t = t.replace(/\s+([,.;:!?…])/g, '$1').replace(/[ \t]{2,}/g, ' ').trim();
+    const atStart = !base || /(^|[.!?…]\s*|\n\s*)$/.test(base);
+    if(atStart) t = t.charAt(0).toUpperCase() + t.slice(1);
+    // capitalize after sentence end inside chunk
+    t = t.replace(/([.!?…]\s+|\n\s*)(\p{Ll})/gu, (m, a, b) => a + b.toUpperCase());
+    if(isFinal && !/[.!?…:;,]$/.test(t)) t += '.';
+    if(!base) return t;
+    const sep = /\n$/.test(base) || /^[,.;:!?…\n]/.test(t) ? '' : ' ';
+    return base + sep + t;
+  }
+
   if(SpeechRecognitionCtor){
     recognition = new SpeechRecognitionCtor();
     recognition.continuous = true;
     recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
 
     recognition.onresult = (event) => {
       let finalChunk = '';
@@ -1608,9 +1653,9 @@
         else { interimChunk += transcript; }
       }
       if(finalChunk){
-        dictateBaseText = (dictateBaseText ? dictateBaseText + ' ' : '') + finalChunk.trim();
+        dictateBaseText = appendDictation(dictateBaseText, finalChunk, true);
       }
-      modalTextarea.value = (dictateBaseText + ' ' + interimChunk).trim();
+      modalTextarea.value = interimChunk ? appendDictation(dictateBaseText, interimChunk, false) : dictateBaseText;
     };
 
     recognition.onerror = (e) => {

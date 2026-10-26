@@ -1347,59 +1347,62 @@
     return `${m}:${String(rem).padStart(2, '0')}`;
   }
 
-  function audioDay(a){ return (typeof a.day === 'number') ? a.day : 0; }
+  function mediaDay(m){ return (typeof m.day === 'number') ? m.day : 0; }
+  function audioDay(a){ return mediaDay(a); }
+
+  function makeRemoveBtn(onRemove){
+    const rm = document.createElement('button');
+    rm.type = 'button';
+    rm.className = 'media-remove';
+    rm.textContent = '×';
+    rm.addEventListener('click', (e) => { e.stopPropagation(); onRemove(); renderMediaThumbs(); renderDayTabs(); });
+    return rm;
+  }
+
+  function removeFrom(arr, item){ const i = arr.indexOf(item); if(i >= 0) arr.splice(i, 1); }
 
   function renderMediaThumbs(){
     const wrap = document.getElementById('mediaThumbs');
     wrap.innerHTML = '';
 
+    const imgs = currentImages.filter(m => mediaDay(m) === activeDayIndex);
+    const vids = currentVideos.filter(m => mediaDay(m) === activeDayIndex);
+    const auds = currentAudios.filter(m => mediaDay(m) === activeDayIndex);
+
     const combinedList = [
-      ...currentImages.map(img => ({ type: 'image', data: img })),
-      ...currentVideos.map(vid => ({ type: 'video', data: vid })),
-      ...currentAudios.filter(a => audioDay(a) === activeDayIndex).map(aud => ({ type: 'audio', data: aud }))
+      ...imgs.map(d => ({ type: 'image', data: d })),
+      ...vids.map(d => ({ type: 'video', data: d })),
+      ...auds.map(d => ({ type: 'audio', data: d }))
     ];
 
-    currentImages.forEach((img, idx) => {
+    imgs.forEach((img, idx) => {
       const box = document.createElement('div');
       box.className = 'media-thumb';
       const el = document.createElement('img');
       el.src = img.src;
       el.addEventListener('click', () => openLightboxAt(combinedList, idx));
       box.appendChild(el);
-      const rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'media-remove';
-      rm.textContent = '×';
-      rm.addEventListener('click', (e) => { e.stopPropagation(); currentImages.splice(idx, 1); renderMediaThumbs(); });
-      box.appendChild(rm);
+      box.appendChild(makeRemoveBtn(() => removeFrom(currentImages, img)));
       wrap.appendChild(box);
     });
 
-    currentVideos.forEach((vid, idx) => {
+    vids.forEach((vid, idx) => {
       const box = document.createElement('div');
       box.className = 'media-thumb';
       const el = document.createElement('video');
       el.src = URL.createObjectURL(vid.blob);
       el.muted = true;
-      el.addEventListener('click', () => openLightboxAt(combinedList, currentImages.length + idx));
+      el.addEventListener('click', () => openLightboxAt(combinedList, imgs.length + idx));
       box.appendChild(el);
       const badge = document.createElement('span');
       badge.className = 'video-badge';
       badge.textContent = '▶ video';
       box.appendChild(badge);
-      const rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'media-remove';
-      rm.textContent = '×';
-      rm.addEventListener('click', (e) => { e.stopPropagation(); currentVideos.splice(idx, 1); renderMediaThumbs(); });
-      box.appendChild(rm);
+      box.appendChild(makeRemoveBtn(() => removeFrom(currentVideos, vid)));
       wrap.appendChild(box);
     });
 
-    let audioPos = 0;
-    currentAudios.forEach((aud, idx) => {
-      if(audioDay(aud) !== activeDayIndex) return;
-      const myPos = audioPos++;
+    auds.forEach((aud, idx) => {
       const box = document.createElement('div');
       box.className = 'media-thumb audio-thumb';
       const icon = document.createElement('span');
@@ -1410,13 +1413,8 @@
       label.className = 'audio-label';
       label.textContent = formatDuration(aud.duration);
       box.appendChild(label);
-      box.addEventListener('click', () => openLightboxAt(combinedList, currentImages.length + currentVideos.length + myPos));
-      const rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'media-remove';
-      rm.textContent = '×';
-      rm.addEventListener('click', (e) => { e.stopPropagation(); currentAudios.splice(idx, 1); renderMediaThumbs(); renderDayTabs(); });
-      box.appendChild(rm);
+      box.addEventListener('click', () => openLightboxAt(combinedList, imgs.length + vids.length + idx));
+      box.appendChild(makeRemoveBtn(() => removeFrom(currentAudios, aud)));
       wrap.appendChild(box);
     });
   }
@@ -1424,10 +1422,11 @@
   document.getElementById('photoInput').addEventListener('change', async (e) => {
     const files = Array.from(e.target.files || []);
     for(const file of files){
-      try{ currentImages.push(await resizeImageFile(file)); }
+      try{ const im = await resizeImageFile(file); im.day = activeDayIndex; currentImages.push(im); }
       catch(err){ alert(`Could not add "${file.name}".`); }
     }
     renderMediaThumbs();
+    renderDayTabs();
     e.target.value = '';
   });
 
@@ -1438,7 +1437,7 @@
         alert(`"${file.name}" is larger than ${MAX_VIDEO_MB}MB, so it was skipped. Try a shorter clip.`);
         return;
       }
-      currentVideos.push({ blob: file, type: file.type });
+      currentVideos.push({ blob: file, type: file.type, day: activeDayIndex });
     });
     renderMediaThumbs();
     e.target.value = '';
@@ -1510,7 +1509,7 @@
       tab.type = 'button';
       tab.className = 'day-tab' + (idx === activeDayIndex ? ' active' : '');
       const hasText = currentDays[idx] && currentDays[idx].trim();
-      const hasVoice = currentAudios.some(a => audioDay(a) === idx);
+      const hasVoice = currentAudios.some(a => mediaDay(a) === idx) || currentImages.some(a => mediaDay(a) === idx) || currentVideos.some(a => mediaDay(a) === idx);
       tab.innerHTML = label + (hasText || hasVoice ? '<span class="day-dot"></span>' : '');
       tab.addEventListener('click', () => switchDayTab(idx));
       wrap.appendChild(tab);
@@ -2045,7 +2044,9 @@
         y += 16;
 
         e.days.forEach((t, i) => {
-          if(!t || !t.trim()) return;
+          const dayImgs = e.images.filter(m => mediaDay(m) === i);
+          if((!t || !t.trim()) && !dayImgs.length) return;
+          t = t || '';
           if(y > pageHeight - 60){ doc.addPage(); y = 64; }
           doc.setFont('DejaVuSans', 'bold');
           doc.setFontSize(10.5);
@@ -2062,16 +2063,15 @@
             y += 15;
           });
           y += 6;
+          for(const img of dayImgs){
+            const displayW = Math.min(220, maxWidth);
+            const displayH = displayW * (img.h / img.w);
+            if(y + displayH > pageHeight - 40){ doc.addPage(); y = 64; }
+            try{ doc.addImage(img.src, 'JPEG', marginX, y, displayW, displayH); }
+            catch(err){ /* skip image if it fails to embed */ }
+            y += displayH + 10;
+          }
         });
-
-        for(const img of e.images){
-          const displayW = Math.min(220, maxWidth);
-          const displayH = displayW * (img.h / img.w);
-          if(y + displayH > pageHeight - 40){ doc.addPage(); y = 64; }
-          try{ doc.addImage(img.src, 'JPEG', marginX, y, displayW, displayH); }
-          catch(err){ /* skip image if it fails to embed */ }
-          y += displayH + 10;
-        }
 
         y += 14;
       }

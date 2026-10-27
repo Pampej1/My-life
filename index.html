@@ -1207,7 +1207,13 @@
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('aborted'));
     });
+  }
+
+  // Never let a slow/failed media write block saving the text note.
+  function withTimeout(promise, ms){
+    return Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
   }
 
   async function clearAllMedia(){
@@ -1640,7 +1646,15 @@
     return base + sep + t;
   }
 
-  if(SpeechRecognitionCtor){
+  const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  if(IS_IOS){
+    dictateBtn.title = 'Tap the microphone on the iPhone keyboard to dictate';
+    dictateBtn.addEventListener('click', () => {
+      modalTextarea.focus();
+      alert('On iPhone, dictate with the microphone key on the keyboard (next to the space bar). Your text is saved automatically when you tap "Save note".');
+    });
+  } else if(SpeechRecognitionCtor){
     recognition = new SpeechRecognitionCtor();
     recognition.continuous = true;
     recognition.interimResults = true;
@@ -1724,6 +1738,24 @@
     });
   }
 
+  // Keep the stored text in sync (covers keyboard dictation, autocorrect, paste) and
+  // update the green dots in place, without rebuilding the tab buttons mid-tap.
+  function syncDayDots(){
+    const tabs = document.querySelectorAll('#dayTabs .day-tab');
+    tabs.forEach((tab, idx) => {
+      const has = (currentDays[idx] && currentDays[idx].trim())
+        || currentAudios.some(m => mediaDay(m) === idx)
+        || currentImages.some(m => mediaDay(m) === idx)
+        || currentVideos.some(m => mediaDay(m) === idx);
+      const dot = tab.querySelector('.day-dot');
+      if(has && !dot){ const d = document.createElement('span'); d.className = 'day-dot'; tab.appendChild(d); }
+      if(!has && dot){ dot.remove(); }
+    });
+  }
+  ['input','change','compositionend'].forEach(ev => {
+    modalTextarea.addEventListener(ev, () => { currentDays[activeDayIndex] = modalTextarea.value; syncDayDots(); });
+  });
+
   function stopDictationIfActive(){
     if(isDictating && recognition){
       dictateManualStop = true;
@@ -1759,8 +1791,15 @@
     const images = currentImages;
     const videos = currentVideos;
     const audios = currentAudios;
-    await saveMedia(key, images, videos, audios);
-    if(images.length || videos.length || audios.length){ mediaKeysCache.add(key); } else { mediaKeysCache.delete(key); }
+    const hasMediaNow = images.length || videos.length || audios.length;
+    if(hasMediaNow || mediaKeysCache.has(key)){
+      try{
+        await withTimeout(saveMedia(key, images, videos, audios), 8000);
+        if(hasMediaNow){ mediaKeysCache.add(key); } else { mediaKeysCache.delete(key); }
+      } catch(err){
+        alert('Your text was saved, but the attached photos/videos/voice notes could not be stored on this device.');
+      }
+    }
 
     closeModal();
     render(false);
